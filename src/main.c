@@ -144,18 +144,8 @@ int main(void)
 	SDL_Renderer *renderer;
 	bool running;
 	SDL_Event event;
-	SDL_Color white;
-	SDL_Color red;
+	SDL_Color white = {255, 255, 255, SDL_ALPHA_OPAQUE};
 	objmodel_t objmodel;
-
-	white.r = 255;
-	white.g = 255;
-	white.b = 255;
-	white.a = SDL_ALPHA_OPAQUE;
-	red.r = 255;
-	red.g = 0;
-	red.b = 0;
-	red.a = SDL_ALPHA_OPAQUE;
 
 	SDL_Init(SDL_INIT_VIDEO);
 	SDL_CreateWindowAndRenderer("renderer", WINDOW_WIDTH, WINDOW_HEIGHT, 0, &window, &renderer);
