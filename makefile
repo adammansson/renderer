@@ -7,7 +7,7 @@ HDRS := $(wildcard $(SRCS_DIR)/*/*.h $(SRCS_DIR)/*.h)
 OBJS := $(patsubst $(SRCS_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
 
 CC := cc
-CFLAGS := -Wall -Wextra -ansi -pedantic -lSDL3
+CFLAGS := -Wall -Wextra -ansi -pedantic -lm -lSDL3
 
 $(BUILD_DIR)/$(TARGET): $(OBJS) makefile
 	$(CC) -o $@ $(OBJS) $(CFLAGS)
