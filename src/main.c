@@ -1,10 +1,15 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <math.h>
 #include <SDL3/SDL.h>
 
 #define WINDOW_WIDTH (800)
 #define WINDOW_HEIGHT (800)
+
+typedef struct vec2i {
+	int x, y;
+} vec2i_t;
 
 typedef struct vec3f {
 	float x, y, z;
@@ -21,25 +26,7 @@ typedef struct objmodel {
 	unsigned nfaces;
 } objmodel_t;
 
-void swapf(float *a, float *b)
-{
-	float temp;
-
-	temp = *a;
-	*a = *b;
-	*b = temp;	
-}
-
-void swapvec3f(vec3f_t *a, vec3f_t *b)
-{
-	vec3f_t temp;
-
-	temp = *a;
-	*a = *b;
-	*b = temp;	
-}
-
-vec3f_t vec3f_add(vec3f_t u, vec3f_t v)
+static vec3f_t vec3f_add(vec3f_t u, vec3f_t v)
 {
 	vec3f_t ans;
 	ans.x = u.x + v.x;
@@ -49,7 +36,7 @@ vec3f_t vec3f_add(vec3f_t u, vec3f_t v)
 	return ans;
 }
 
-vec3f_t vec3f_scale(vec3f_t u, float k)
+static vec3f_t vec3f_scale(vec3f_t u, float k)
 {
 	vec3f_t ans;
 	ans.x = u.x * k;
@@ -59,12 +46,12 @@ vec3f_t vec3f_scale(vec3f_t u, float k)
 	return ans;
 }
 
-float vec3f_dot(vec3f_t u, vec3f_t v)
+static float vec3f_dot(vec3f_t u, vec3f_t v)
 {
 	return u.x * v.x + u.y * v.y + u.z * v.z;
 }
 
-vec3f_t vec3f_cross(vec3f_t u, vec3f_t v)
+static vec3f_t vec3f_cross(vec3f_t u, vec3f_t v)
 {
 	vec3f_t ans;
 	ans.x = u.y * v.z - u.z * v.y;
@@ -74,7 +61,7 @@ vec3f_t vec3f_cross(vec3f_t u, vec3f_t v)
 	return ans;
 }
 
-vec3f_t vec3f_norm(vec3f_t u)
+static vec3f_t vec3f_norm(vec3f_t u)
 {
 	float magnitude;
 	magnitude = sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
@@ -82,7 +69,7 @@ vec3f_t vec3f_norm(vec3f_t u)
 	return vec3f_scale(u, 1.0 / magnitude);
 }
 
-vec3f_t vec3f_mult_mat3f(vec3f_t v, float *m)
+static vec3f_t vec3f_mult_mat3f(vec3f_t v, float *m)
 {
 	vec3f_t ans;
 	ans.x = m[0] * v.x + m[3] * v.y + m[6] * v.z;
@@ -92,109 +79,84 @@ vec3f_t vec3f_mult_mat3f(vec3f_t v, float *m)
 	return ans;
 }
 
-void line(SDL_Renderer *renderer, float x0, float y0, float x1, float y1, SDL_Color color)
+static vec3f_t barycentric(vec3f_t a, vec3f_t b, vec3f_t c, float px, float py)
 {
-	bool steep;
-	float x;
-	float y;
-	float dx;
-	float dy;
-	float derror;
-	float error;
+	vec3f_t u; 
+	vec3f_t v;
+	vec3f_t cross;
+	vec3f_t ans;
 
-	steep = false;
+	u.x = c.x - a.x;
+	u.y = b.x - a.x;
+	u.z = a.x - px;
 
-	if (fabs(x0 - x1) < fabs(y0 - y1)) {
-		swapf(&x0, &y0);
-		swapf(&x1, &y1);
+	v.x = c.y - a.y;
+	v.y = b.y - a.y;
+	v.z = a.y - py;
 
-		steep = true;
+	cross = vec3f_cross(u, v);
+
+	if (fabs(cross.z) < 1.0) {
+		ans.x = -1;
+		ans.y = 0;
+		ans.z = 0;
+		return ans;
 	}
 
-	if (x0 > x1) {
-		swapf(&x0, &x1);
-		swapf(&y0, &y1);
-	}
-
-	dx = x1 - x0;
-	dy = y1 - y0;
-	derror = fabs(dy) * 2;
-	error = 0;
-	y = y0;
-
-	SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
-	for (x = x0; x <= x1; ++x) {
-		if (steep)
-			SDL_RenderPoint(renderer, y, x);
-		else
-			SDL_RenderPoint(renderer, x, y);
-	
-		error += derror;
-		if (error > dx) {
-			y += (y1 > y0 ? 1 : -1);
-			error -= dx * 2;
-		}
-	}
+	ans.x = 1.0 - (cross.x + cross.y) / cross.z;
+	ans.y = cross.y / cross.z;
+	ans.z = cross.x / cross.z;
+	return ans;
 }
 
-void triangle(SDL_Renderer *renderer, vec3f_t a, vec3f_t b, vec3f_t c, SDL_Color color)
+static float minf(float a, float b)
 {
-	unsigned total_height;
-	unsigned segment_height;
-	float y;
-	float alpha;
-	float beta;
-	float x0;
-	float x1;
-	float j;
+	return a < b ? a : b;
+}
 
-	SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+static float maxf(float a, float b)
+{
+	return a > b ? a : b;
+}
 
-	if (a.y > b.y)
-		swapvec3f(&a, &b);
-	if (a.y > c.y)
-		swapvec3f(&a, &c);
-	if (b.y > c.y)
-		swapvec3f(&b, &c);
+static void triangle(SDL_Surface *surface, vec3f_t a, vec3f_t b, vec3f_t c, SDL_Color color, float *zbuffer)
+{
+	float minx;
+	float maxx;
+	float miny;
+	float maxy;
+	int px;
+	int py;
+	float pz;
+	vec3f_t bc;
+	int i;
 
-	total_height = c.y - a.y;
-	if (total_height == 0)
-		return;
+	minx = minf(a.x, minf(b.x, c.x));
+	maxx = maxf(a.x, maxf(b.x, c.x));
+	miny = minf(a.y, minf(b.y, c.y));
+	maxy = maxf(a.y, maxf(b.y, c.y));
 
-	segment_height = b.y - a.y + 1;
-	if (segment_height != 0) {
-		for (y = a.y; y <= b.y; y += 1.0) {
-			alpha = (y - a.y) / total_height;
-			beta = (y - a.y) / segment_height;
-			x0 = a.x + alpha * (c.x - a.x);
-			x1 = a.x + beta * (b.x - a.x);
-			if (x0 > x1)
-				swapf(&x0, &x1);
+	for (py = (int) floor(miny); py <= (int) ceil(maxy); ++py) {
+		for (px = (int) floor(minx); px <= (int) ceil(maxx); ++px) {
+			bc = barycentric(a, b, c, px + 0.5, py + 0.5);
 
-			for (j = x0; j <= x1; j += 1.0) {
-				SDL_RenderPoint(renderer, j, y);
-			}
-		}
-	}
+			if (bc.x >= 0.0 && bc.y >= 0.0 && bc.z >= 0.0) {
+				pz = 0.0;
+				pz += a.z * bc.x;
+				pz += b.z * bc.y;
+				pz += c.z * bc.z;
 
-	segment_height = c.y - b.y + 1;
-	if (segment_height != 0) {
-		for (y = b.y; y <= c.y; ++y) {
-			alpha = (y - a.y) / total_height;
-			beta = (y - b.y) / segment_height;
-			x0 = a.x + (c.x - a.x) * alpha;
-			x1 = b.x + (c.x - b.x) * beta;
-			if (x0 > x1)
-				swapf(&x0, &x1);
-
-			for (j = x0; j <= x1; ++j) {
-				SDL_RenderPoint(renderer, j, y);
+				i = px + py * WINDOW_WIDTH;
+				if (zbuffer[i] < pz) {
+					zbuffer[i] = pz;
+					SDL_WriteSurfacePixel(surface, px, py, color.r, color.g, color.b, color.a);
+				}
 			}
 		}
 	}
 }
 
-void objmodel_parse(objmodel_t *objmodel, const char *filename)
+static void objmodel_parse(objmodel_t *objmodel, const char *filename)
 {
 	FILE *fp;
 	int c;
@@ -243,7 +205,7 @@ void objmodel_parse(objmodel_t *objmodel, const char *filename)
 	}
 }
 
-void objmodel_draw(objmodel_t *objmodel, SDL_Renderer *renderer, SDL_Color original_color)
+static void objmodel_draw(objmodel_t *objmodel, SDL_Surface *surface, SDL_Color original_color)
 {
 	unsigned i;
 	face_t f;
@@ -255,6 +217,7 @@ void objmodel_draw(objmodel_t *objmodel, SDL_Renderer *renderer, SDL_Color origi
 	vec3f_t ba;
 	vec3f_t ca;
 	SDL_Color color;
+	float zbuffer[WINDOW_WIDTH * WINDOW_HEIGHT];
 
 	float flip[] = {1, 0, 0,
 			0, -1, 0,
@@ -262,13 +225,16 @@ void objmodel_draw(objmodel_t *objmodel, SDL_Renderer *renderer, SDL_Color origi
 
 	vec3f_t translate = {1.0, 1.0, 1.0};
 
-	float scale[] = {WINDOW_WIDTH / 2.0, 0, 0,
-			0, WINDOW_HEIGHT / 2.0, 0,
-			0, 0, 1};
+	float scale[] = {400.0, 0, 0,
+			0, 400.0, 0,
+			0, 0, 400.0};
 
 	vec3f_t light = {0, 0, 1};
 
 	color = original_color;
+
+	for (i = 0; i < WINDOW_WIDTH * WINDOW_HEIGHT; ++i)
+		zbuffer[i] = -100000.0;
 
 	for (i = 0; i < objmodel->nfaces; ++i) {
 		f = objmodel->faces[i];
@@ -301,7 +267,7 @@ void objmodel_draw(objmodel_t *objmodel, SDL_Renderer *renderer, SDL_Color origi
 			b = vec3f_mult_mat3f(b, scale);
 			c = vec3f_mult_mat3f(c, scale);
 
-			triangle(renderer, a, b, c, color);
+			triangle(surface, a, b, c, color, zbuffer);
 		}
 	}
 }
@@ -310,19 +276,26 @@ int main(void)
 {
 	SDL_Window *window;
 	SDL_Renderer *renderer;
+	SDL_Surface *surface;
+	SDL_Texture *texture;
+
 	bool running;
 	SDL_Event event;
 	SDL_KeyboardEvent keyboard_event;
+	objmodel_t objmodel;
 	SDL_Color white = {255, 255, 255, SDL_ALPHA_OPAQUE};
 	SDL_Color red = {255, 0, 0, SDL_ALPHA_OPAQUE};
-	SDL_Color green = {0, 255, 0, SDL_ALPHA_OPAQUE};
-	objmodel_t objmodel;
 
 	SDL_Init(SDL_INIT_VIDEO);
 	SDL_CreateWindowAndRenderer("renderer", WINDOW_WIDTH, WINDOW_HEIGHT, 0, &window, &renderer);
+	surface = SDL_CreateSurface(WINDOW_WIDTH, WINDOW_HEIGHT, SDL_PIXELFORMAT_RGBA8888);
 
 	objmodel_parse(&objmodel, "obj/african.obj");
-	objmodel_draw(&objmodel, renderer, white);
+	objmodel_draw(&objmodel, surface, white);
+
+	texture = SDL_CreateTextureFromSurface(renderer, surface);
+	SDL_SetRenderTarget(renderer, texture);
+	SDL_RenderTexture(renderer, texture, NULL, NULL);
 	SDL_RenderPresent(renderer);
 
 	running = true;
@@ -333,11 +306,13 @@ int main(void)
 		{
 		case SDL_EVENT_QUIT:
 			return 0;
-		case SDL_EVENT_KEY_DOWN:
 		case SDL_EVENT_KEY_UP:
 			keyboard_event = event.key;
 			if (keyboard_event.key == SDLK_Q)
 				return 0;
+			else if (keyboard_event.key == SDLK_R) {
+				printf("RENDER\n");
+			}
 		}
 	}
 
