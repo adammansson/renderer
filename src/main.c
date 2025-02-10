@@ -7,10 +7,6 @@
 #define WINDOW_WIDTH (800)
 #define WINDOW_HEIGHT (800)
 
-typedef struct vec2i {
-	int x, y;
-} vec2i_t;
-
 typedef struct vec3f {
 	float x, y, z;
 } vec3f_t;
@@ -19,10 +15,16 @@ typedef struct face {
 	unsigned v[3];
 } face_t;
 
+typedef struct vec4f {
+	float x, y, z, w;
+} vec4f_t;
+
 typedef struct objmodel {
 	vec3f_t *verts; 
+	vec3f_t *norms; 
 	face_t *faces;
 	unsigned nverts;
+	unsigned nnorms;
 	unsigned nfaces;
 } objmodel_t;
 
@@ -72,9 +74,41 @@ static vec3f_t vec3f_norm(vec3f_t u)
 static vec3f_t vec3f_mult_mat3f(vec3f_t v, float *m)
 {
 	vec3f_t ans;
-	ans.x = m[0] * v.x + m[3] * v.y + m[6] * v.z;
-	ans.y = m[1] * v.x + m[4] * v.y + m[7] * v.z;
-	ans.z = m[2] * v.x + m[5] * v.y + m[8] * v.z;
+	ans.x = m[0] * v.x + m[1] * v.y + m[2] * v.z;
+	ans.y = m[3] * v.x + m[4] * v.y + m[5] * v.z;
+	ans.z = m[6] * v.x + m[7] * v.y + m[8] * v.z;
+
+	return ans;
+}
+
+static vec4f_t vec3f_to_vec4f(vec3f_t v)
+{
+	vec4f_t ans;
+	ans.x = v.x;
+	ans.y = v.y;
+	ans.z = v.z;
+	ans.w = 1.0;
+
+	return ans;
+}
+
+static vec4f_t vec4f_mult_mat4f(vec4f_t v, float *m)
+{
+	vec4f_t ans;
+	ans.x = m[0] * v.x + m[1] * v.y + m[2] * v.z + m[3] * v.w;
+	ans.y = m[4] * v.x + m[5] * v.y + m[6] * v.z + m[7] * v.w;
+	ans.z = m[8] * v.x + m[9] * v.y + m[10] * v.z + m[11] * v.w;
+	ans.w = m[12] * v.x + m[13] * v.y + m[14] * v.z + m[15] * v.w;
+
+	return ans;
+}
+
+static vec3f_t vec4f_to_vec3f(vec4f_t v)
+{
+	vec3f_t ans;
+	ans.x = v.x / v.w;
+	ans.y = v.y / v.w;
+	ans.z = v.z / v.w;
 
 	return ans;
 }
@@ -106,6 +140,7 @@ static vec3f_t barycentric(vec3f_t a, vec3f_t b, vec3f_t c, float px, float py)
 	ans.x = 1.0 - (cross.x + cross.y) / cross.z;
 	ans.y = cross.y / cross.z;
 	ans.z = cross.x / cross.z;
+
 	return ans;
 }
 
@@ -131,26 +166,26 @@ static void triangle(SDL_Surface *surface, vec3f_t a, vec3f_t b, vec3f_t c, SDL_
 	vec3f_t bc;
 	int i;
 
-	minx = minf(a.x, minf(b.x, c.x));
-	maxx = maxf(a.x, maxf(b.x, c.x));
-	miny = minf(a.y, minf(b.y, c.y));
-	maxy = maxf(a.y, maxf(b.y, c.y));
+	minx = maxf(0.0, minf(a.x, minf(b.x, c.x)));
+	miny = maxf(0.0, minf(a.y, minf(b.y, c.y)));
+	maxx = minf((float) WINDOW_WIDTH, maxf(a.x, maxf(b.x, c.x)));
+	maxy = minf((float) WINDOW_HEIGHT, maxf(a.y, maxf(b.y, c.y)));
 
 	for (py = (int) floor(miny); py <= (int) ceil(maxy); ++py) {
 		for (px = (int) floor(minx); px <= (int) ceil(maxx); ++px) {
 			bc = barycentric(a, b, c, px + 0.5, py + 0.5);
 
-			if (bc.x >= 0.0 && bc.y >= 0.0 && bc.z >= 0.0) {
-				pz = 0.0;
-				pz += a.z * bc.x;
-				pz += b.z * bc.y;
-				pz += c.z * bc.z;
+			if (bc.x < 0.0 || bc.y < 0.0 || bc.z < 0.0)
+				continue;
+			
+			pz = a.z * bc.x;
+			pz += b.z * bc.y;
+			pz += c.z * bc.z;
 
-				i = px + py * WINDOW_WIDTH;
-				if (zbuffer[i] < pz) {
-					zbuffer[i] = pz;
-					SDL_WriteSurfacePixel(surface, px, py, color.r, color.g, color.b, color.a);
-				}
+			i = px + py * WINDOW_WIDTH;
+			if (zbuffer[i] < pz) {
+				zbuffer[i] = pz;
+				SDL_WriteSurfacePixel(surface, px, py, color.r, color.g, color.b, color.a);
 			}
 		}
 	}
@@ -161,15 +196,20 @@ static void objmodel_parse(objmodel_t *objmodel, const char *filename)
 	FILE *fp;
 	int c;
 	vec3f_t *v;
+	vec3f_t *vn;
 	face_t *f;
 	unsigned averts;
+	unsigned anorms;
 	unsigned afaces;
 
 	averts = 256;
 	objmodel->verts = malloc(averts * sizeof(*objmodel->verts));
+	anorms = 256;
+	objmodel->norms = malloc(anorms * sizeof(*objmodel->norms));
 	afaces = 256;
 	objmodel->faces = malloc(afaces * sizeof(*objmodel->faces));
 	objmodel->nverts = 0;
+	objmodel->nnorms = 0;
 	objmodel->nfaces = 0;
 	fp = fopen(filename, "r");
 
@@ -190,6 +230,16 @@ static void objmodel_parse(objmodel_t *objmodel, const char *filename)
 					}
 				}
 			}
+			if (c == 'n') {
+				vn = objmodel->norms + objmodel->nnorms;
+				if (fscanf(fp, "%f %f %f", &(vn->x), &(vn->y), &(vn->z)) == 3) {
+					objmodel->nnorms += 1;
+					if (anorms <= objmodel->nnorms) {
+						anorms += 256;
+						objmodel->norms = realloc(objmodel->norms, anorms * sizeof(*objmodel->norms));
+					}
+				}
+			}
 		}
 
 		if (c == 'f') {
@@ -205,7 +255,7 @@ static void objmodel_parse(objmodel_t *objmodel, const char *filename)
 	}
 }
 
-static void objmodel_draw(objmodel_t *objmodel, SDL_Surface *surface, SDL_Color original_color)
+static void objmodel_draw(objmodel_t *objmodel, SDL_Surface *surface, float *viewport, float *projection, float *view, vec3f_t light)
 {
 	unsigned i;
 	face_t f;
@@ -218,23 +268,12 @@ static void objmodel_draw(objmodel_t *objmodel, SDL_Surface *surface, SDL_Color 
 	vec3f_t ca;
 	SDL_Color color;
 	float zbuffer[WINDOW_WIDTH * WINDOW_HEIGHT];
-
-	float flip[] = {1, 0, 0,
-			0, -1, 0,
-			0, 0, 1};
-
-	vec3f_t translate = {1.0, 1.0, 1.0};
-
-	float scale[] = {400.0, 0, 0,
-			0, 400.0, 0,
-			0, 0, 400.0};
-
-	vec3f_t light = {0, 0, 1};
-
-	color = original_color;
+	vec4f_t ae;
+	vec4f_t be;
+	vec4f_t ce;
 
 	for (i = 0; i < WINDOW_WIDTH * WINDOW_HEIGHT; ++i)
-		zbuffer[i] = -100000.0;
+		zbuffer[i] = -1e-10;
 
 	for (i = 0; i < objmodel->nfaces; ++i) {
 		f = objmodel->faces[i];
@@ -245,31 +284,99 @@ static void objmodel_draw(objmodel_t *objmodel, SDL_Surface *surface, SDL_Color 
 
 		ba = vec3f_add(b, vec3f_scale(a, -1));
 		ca = vec3f_add(c, vec3f_scale(a, -1));
-		cross = vec3f_cross(ba, ca);
-		cross = vec3f_norm(cross);
+		cross = vec3f_norm(vec3f_cross(ba, ca));
 		brightness = vec3f_dot(cross, light);
 
-		if (brightness > 0) {
-			color.r = original_color.r * brightness;
-			color.g = original_color.g * brightness;
-			color.b = original_color.b * brightness;
-			color.a = original_color.a;
+		color.r = 255 * maxf(0.1, brightness);
+		color.g = 255 * maxf(0.1, brightness);
+		color.b = 255 * maxf(0.1, brightness);
+		color.a = SDL_ALPHA_OPAQUE;
 
-			a = vec3f_mult_mat3f(a, flip);
-			b = vec3f_mult_mat3f(b, flip);
-			c = vec3f_mult_mat3f(c, flip);
+		ae = vec3f_to_vec4f(a);
+		be = vec3f_to_vec4f(b);
+		ce = vec3f_to_vec4f(c);
 
-			a = vec3f_add(a, translate);
-			b = vec3f_add(b, translate);
-			c = vec3f_add(c, translate);
+		ae = vec4f_mult_mat4f(ae, view);
+		be = vec4f_mult_mat4f(be, view);
+		ce = vec4f_mult_mat4f(ce, view);
 
-			a = vec3f_mult_mat3f(a, scale);
-			b = vec3f_mult_mat3f(b, scale);
-			c = vec3f_mult_mat3f(c, scale);
+		ae = vec4f_mult_mat4f(ae, projection);
+		be = vec4f_mult_mat4f(be, projection);
+		ce = vec4f_mult_mat4f(ce, projection);
 
-			triangle(surface, a, b, c, color, zbuffer);
-		}
+		ae = vec4f_mult_mat4f(ae, viewport);
+		be = vec4f_mult_mat4f(be, viewport);
+		ce = vec4f_mult_mat4f(ce, viewport);
+
+		a = vec4f_to_vec3f(ae);
+		b = vec4f_to_vec3f(be);
+		c = vec4f_to_vec3f(ce);
+
+		triangle(surface, a, b, c, color, zbuffer);
 	}
+}
+
+static void init_viewport(float *m, float x, float y, float w, float h)
+{
+	float depth;
+	
+	depth = 255.0;
+	memset(m, 0.0, 16 * sizeof(*m));
+
+	m[0 * 4 + 3] = x + w / 2.0;
+	m[1 * 4 + 3] = y + h / 2.0;
+	m[2 * 4 + 3] = depth / 2.0;
+
+	m[0 * 4 + 0] = w / 2.0;
+	m[1 * 4 + 1] = -h / 2.0;
+	m[2 * 4 + 2] = depth / 2.0;
+	m[3 * 4 + 3] = 1.0;
+}
+
+static void init_lookat(float *m, vec3f_t eye, vec3f_t center, vec3f_t up)
+{
+	vec3f_t a;
+	vec3f_t b;
+	vec3f_t c;
+
+	memset(m, 0.0, 16 * sizeof(*m));
+	m[0 * 4 + 0] = 1.0;
+	m[1 * 4 + 1] = 1.0;
+	m[2 * 4 + 2] = 1.0;
+	m[3 * 4 + 3] = 1.0;
+
+	a = vec3f_norm(vec3f_add(eye, vec3f_scale(center, -1)));
+	b = vec3f_norm(vec3f_cross(up, a));
+	c = vec3f_norm(vec3f_cross(a, b));
+
+	m[0 * 4 + 0] = b.x;
+	m[1 * 4 + 0] = c.x;
+	m[2 * 4 + 0] = a.x;
+	m[0 * 4 + 3] = -center.x;
+
+	m[0 * 4 + 1] = b.y;
+	m[1 * 4 + 1] = c.y;
+	m[2 * 4 + 1] = a.y;
+	m[1 * 4 + 3] = -center.y;
+
+	m[0 * 4 + 2] = b.z;
+	m[1 * 4 + 2] = c.z;
+	m[2 * 4 + 2] = a.z;
+	m[2 * 4 + 3] = -center.z;
+}
+
+static void render(SDL_Renderer *renderer, objmodel_t *objmodel, SDL_Surface *surface, float *viewport, float *projection, float *view, vec3f_t light)
+{
+	SDL_Texture *texture;
+
+	SDL_ClearSurface(surface, 0.0, 0.0, 0.0, 255.0);
+	SDL_RenderClear(renderer);
+
+	objmodel_draw(objmodel, surface, viewport, projection, view, light);
+	texture = SDL_CreateTextureFromSurface(renderer, surface);
+	SDL_SetRenderTarget(renderer, texture);
+	SDL_RenderTexture(renderer, texture, NULL, NULL);
+	SDL_RenderPresent(renderer);
 }
 
 int main(void)
@@ -277,41 +384,90 @@ int main(void)
 	SDL_Window *window;
 	SDL_Renderer *renderer;
 	SDL_Surface *surface;
-	SDL_Texture *texture;
 
 	bool running;
+	bool should_rerender;
 	SDL_Event event;
 	SDL_KeyboardEvent keyboard_event;
 	objmodel_t objmodel;
-	SDL_Color white = {255, 255, 255, SDL_ALPHA_OPAQUE};
-	SDL_Color red = {255, 0, 0, SDL_ALPHA_OPAQUE};
+
+	float viewport[16];
+
+	float projection[16] =
+		{1.0,	0,	0,	0,
+		0,	1.0,	0,	0,
+		0,	0,	1.0,	0,
+		0,	0,	0,	1.0};
+
+	float view[16];
+
+	vec3f_t light =
+		{0.0,	0.0,	1.0};
+
+	vec3f_t eye =
+		{0.0,	0.0,	3.0};
+
+	vec3f_t center =
+		{0.0,	0.0,	0.0};
+
+	vec3f_t up =
+		{0.0,	1.0,	0.0};
+
+	init_viewport(viewport, 100.0, 100.0, 600.0, 600.0);
+	init_lookat(view, eye, center, up);
+	projection[3 * 4 + 2] = -1.0 / eye.z;
 
 	SDL_Init(SDL_INIT_VIDEO);
 	SDL_CreateWindowAndRenderer("renderer", WINDOW_WIDTH, WINDOW_HEIGHT, 0, &window, &renderer);
 	surface = SDL_CreateSurface(WINDOW_WIDTH, WINDOW_HEIGHT, SDL_PIXELFORMAT_RGBA8888);
 
 	objmodel_parse(&objmodel, "obj/african.obj");
-	objmodel_draw(&objmodel, surface, white);
-
-	texture = SDL_CreateTextureFromSurface(renderer, surface);
-	SDL_SetRenderTarget(renderer, texture);
-	SDL_RenderTexture(renderer, texture, NULL, NULL);
-	SDL_RenderPresent(renderer);
 
 	running = true;
+	should_rerender = true;
 	while (running) {
+		if (should_rerender) {
+			render(renderer, &objmodel, surface, viewport, projection, view, light);
+			should_rerender = false;
+		}
+
 		SDL_WaitEvent(&event);
 
 		switch (event.type)
 		{
 		case SDL_EVENT_QUIT:
 			return 0;
+
 		case SDL_EVENT_KEY_UP:
 			keyboard_event = event.key;
-			if (keyboard_event.key == SDLK_Q)
+			switch (keyboard_event.key)
+			{
+			case SDLK_Q:
 				return 0;
-			else if (keyboard_event.key == SDLK_R) {
-				printf("RENDER\n");
+
+			case SDLK_W:
+				eye.y += 1;
+				init_lookat(view, eye, center, up);
+				should_rerender = true;
+				break;
+
+			case SDLK_A:
+				eye.x -= 1;
+				init_lookat(view, eye, center, up);
+				should_rerender = true;
+				break;
+
+			case SDLK_S:
+				eye.y -= 1;
+				init_lookat(view, eye, center, up);
+				should_rerender = true;
+				break;
+
+			case SDLK_D:
+				eye.x += 1;
+				init_lookat(view, eye, center, up);
+				should_rerender = true;
+				break;
 			}
 		}
 	}
